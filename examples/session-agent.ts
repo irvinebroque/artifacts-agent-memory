@@ -1,4 +1,5 @@
 import { Agent } from "agents";
+import type { TaskHandlers, TaskStep } from "agents/tasks";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { PiHarness, skills } from "agents/harness/pi";
@@ -48,6 +49,28 @@ export class SessionAgent extends Agent<Env, SessionState> {
     defaults: { model: this.ai(this.env.MODEL), thinkingLevel: "low" },
   });
 
+  readonly taskDefinitions = {
+    "turn@v1": async ({ turnId }: { turnId: string }, step: TaskStep) => {
+      await step.do(
+        "answer",
+        { retries: { limit: 1 }, timeout: "10 minutes" },
+        async () => {
+          try {
+            await this.retry(() => this.runTurn({ turnId }), {
+              maxAttempts: 3,
+              baseDelayMs: 1000,
+            });
+          } catch (error) {
+            this.sql`UPDATE turns SET status = 'failed' WHERE id = ${turnId}`;
+            throw error;
+          } finally {
+            await this.queue("beginTurn", undefined);
+          }
+        },
+      );
+    },
+  } satisfies TaskHandlers;
+
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     this
@@ -83,17 +106,32 @@ export class SessionAgent extends Agent<Env, SessionState> {
       .sql<Turn>`SELECT * FROM turns WHERE id = ${turnId}`[0];
     if (existing && existing.prompt !== prompt)
       throw new Error("Turn ID already used for another prompt");
-    if (existing?.status === "done") return { id: turnId, status: "done" };
+    if (existing?.status === "done" || existing?.status === "failed")
+      return { id: turnId, status: existing.status };
     this
       .sql`INSERT OR IGNORE INTO turns (id, prompt, receivedAt, status) VALUES (${turnId}, ${prompt}, ${new Date().toISOString()}, 'queued')`;
-    this
-      .sql`UPDATE turns SET status = 'queued' WHERE id = ${turnId} AND status = 'failed'`;
-    await this.queue(
-      "runTurn",
-      { turnId },
-      { retry: { maxAttempts: 3, baseDelayMs: 1000 } },
-    );
+    await this.queue("beginTurn", undefined, {
+      retry: { maxAttempts: 3, baseDelayMs: 1000 },
+    });
     return { id: turnId, status: "queued" };
+  }
+
+  /** Queue dispatch stays short; one durable task owns the active turn. */
+  async beginTurn() {
+    const turn =
+      this
+        .sql<Turn>`SELECT * FROM turns WHERE status = 'running' ORDER BY rowid LIMIT 1`[0] ??
+      this
+        .sql<Turn>`SELECT * FROM turns WHERE status = 'queued' ORDER BY rowid LIMIT 1`[0];
+    if (!turn) return;
+    // No await between selecting and marking the turn. Concurrent submissions
+    // join this task; later turns stay queued until its finally block wakes us.
+    this.sql`UPDATE turns SET status = 'running' WHERE id = ${turn.id}`;
+    await this.tasks.run(
+      "turn@v1",
+      { turnId: turn.id },
+      { runId: `turn-${turn.id}` },
+    );
   }
 
   async turnStatus(turnId: string) {
@@ -140,7 +178,6 @@ export class SessionAgent extends Agent<Env, SessionState> {
       this
         .sql`UPDATE turns SET status = 'done', text = ${result.text ?? ""} WHERE id = ${turnId}`;
     } catch (error) {
-      this.sql`UPDATE turns SET status = 'failed' WHERE id = ${turnId}`;
       console.error(JSON.stringify({ event: "turn_failed", turnId }));
       throw error;
     }

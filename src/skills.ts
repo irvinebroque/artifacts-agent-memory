@@ -11,7 +11,7 @@ function source(
   const descriptor = { name, description, sourceId: name };
   return {
     id: name,
-    fingerprint: "v2",
+    fingerprint: "v4",
     async list() {
       return [descriptor];
     },

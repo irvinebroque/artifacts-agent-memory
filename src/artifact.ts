@@ -5,6 +5,7 @@ import {
   ArtifactConflict,
 } from "./git";
 import { MAX_FILE_BYTES, MAX_FILES, repositoryPath } from "./format";
+import { rpcResource } from "./rpc";
 
 export class ArtifactRepository {
   constructor(
@@ -15,13 +16,15 @@ export class ArtifactRepository {
 
   async head(): Promise<string | null> {
     using repo = await this.artifacts.get(this.name);
-    return (await repo.log({ ref: "main", limit: 1 }))[0]?.hash ?? null;
+    using commits = rpcResource(await repo.log({ ref: "main", limit: 1 }));
+    return commits.value[0]?.hash ?? null;
   }
 
   async list(prefix = "") {
     if (prefix) repositoryPath(prefix.replace(/\/$/, ""));
     using repo = await this.artifacts.get(this.name);
-    const commit = (await repo.log({ ref: "main", limit: 1 }))[0];
+    using commits = rpcResource(await repo.log({ ref: "main", limit: 1 }));
+    const commit = commits.value[0];
     if (!commit) return { head: null, paths: [] as string[] };
     const paths: string[] = [];
     let entriesSeen = 0;
@@ -31,7 +34,8 @@ export class ArtifactRepository {
       depth: number,
     ): Promise<void> => {
       if (depth > 12) throw new Error("Artifact tree is too deep");
-      for (const entry of (await repo.readTree(hash)) ?? []) {
+      using entries = rpcResource(await repo.readTree(hash));
+      for (const entry of entries.value ?? []) {
         if (++entriesSeen > MAX_FILES * 4)
           throw new Error("Artifact tree is too large");
         const path = prefix + entry.name;
@@ -54,9 +58,14 @@ export class ArtifactRepository {
   async read(path: string, ref?: string) {
     repositoryPath(path);
     using repo = await this.artifacts.get(this.name);
-    const head =
-      ref ?? (await repo.log({ ref: "main", limit: 1 }))[0]?.hash ?? null;
-    const blob = head ? await repo.readFile({ ref: head, path }) : null;
+    using commits = rpcResource(
+      ref ? [] : await repo.log({ ref: "main", limit: 1 }),
+    );
+    const head = ref ?? commits.value[0]?.hash ?? null;
+    using file = rpcResource(
+      head ? await repo.readFile({ ref: head, path }) : null,
+    );
+    const blob = file.value;
     if (blob && blob.size > MAX_FILE_BYTES)
       throw new Error("File exceeds 64 KiB");
     return { head, path, content: blob ? await blob.text() : null };
@@ -81,17 +90,19 @@ export class ArtifactRepository {
 
   async history() {
     using repo = await this.artifacts.get(this.name);
-    return repo.log({ ref: "main", limit: 20 });
+    using commits = rpcResource(await repo.log({ ref: "main", limit: 20 }));
+    // Return plain metadata rather than transferring the RPC result's scope.
+    return structuredClone(commits.value);
   }
 
   async commit(expectedHead: string | null, edits: Edit[], message: string) {
     using repo = await this.artifacts.get(this.name);
-    const info = await repo.info();
-    const token = await repo.createToken("write", 300);
+    using info = rpcResource(await repo.info());
+    using token = rpcResource(await repo.createToken("write", 300));
     try {
       const copy = await GitCheckout.open(
-        info.remote,
-        token.plaintext,
+        info.value.remote,
+        token.value.plaintext,
         expectedHead === null,
       );
       return {
@@ -103,7 +114,7 @@ export class ArtifactRepository {
       if (latest !== expectedHead) throw new ArtifactConflict(latest);
       throw error;
     } finally {
-      await repo.revokeToken(token.id);
+      await repo.revokeToken(token.value.id);
     }
   }
 }

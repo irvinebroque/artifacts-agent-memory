@@ -7,8 +7,14 @@ Use the artifact tool at the beginning of a session and whenever the task needs
 prior context. The platform binds this tool to exactly one user's artifact.
 
 1. Read MEMORY.md. Keep it short: essentials at the top, links under ## Index.
-2. Search for relevant terms or follow [[path]] links. Paths start at the memory
-   root. Omit .md in Markdown links; keep .sql, .sh, and other extensions.
+2. Search for relevant terms or follow [[path]] links. Links are relative to the
+   repository root and omit .md: [[preferences]] refers to preferences.md, and
+   [[projects/payments]] refers to projects/payments.md. Tool paths always use
+   the actual filename, including .md. Preserve .sql, .sh, and other extensions.
+   Include the full root-relative path when writing a link, even inside a nested
+   note. A null read means that exact path is missing; it does not mean the
+   linked Markdown file is empty. List paths or search before concluding that
+   there is no memory. Strip artifact:// from source URIs before reading them.
 3. Save useful preferences, corrections, project context, and reusable queries
    as you learn them. Each Markdown fact is a single-line bullet with metadata:
    `- A fact [source: artifact://sessions/SESSION/TURN.json; added: YYYY-MM-DD]`.

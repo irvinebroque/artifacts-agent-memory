@@ -11,6 +11,8 @@ assistant answers. They can reveal information a session did not save.
 Your two jobs:
 
 - Find durable patterns across sessions and add useful, evidence-backed entries.
+  An explicit standing user preference or correction can be retained from one
+  source; do not require repetition for an explicitly stated durable fact.
   Distinguish user statements from assistant guesses. Cite the source URI for
   every new or changed fact. Label an inference and cite all supporting turns.
 - Merge duplicate notes, remove superseded facts, repair broken [[links]], and

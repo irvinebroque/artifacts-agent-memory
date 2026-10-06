@@ -10,6 +10,7 @@ if (!response.ok)
     `Demo request failed: ${response.status} ${await response.text()}`,
   );
 let pending = "";
+let completed = false;
 const decoder = new TextDecoder();
 for await (const chunk of response.body) {
   pending += decoder.decode(chunk, { stream: true });
@@ -19,6 +20,9 @@ for await (const chunk of response.body) {
     if (!line) continue;
     const event = JSON.parse(line);
     console.log(JSON.stringify(event, null, 2));
+    if (event.event === "done") completed = true;
     if (event.event === "error") process.exitCode = 1;
   }
 }
+if (!completed)
+  throw new Error("Demo ended before all validation checks completed.");

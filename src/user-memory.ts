@@ -1,4 +1,5 @@
 import { Agent } from "agents";
+import type { TaskHandlers, TaskStep } from "agents/tasks";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { PiHarness, skills } from "agents/harness/pi";
@@ -13,6 +14,7 @@ import {
 import { identifier, repoName } from "./format";
 import { artifactTools } from "./extensions";
 import { memorySkillSource, dreamingSkillSource } from "./skills";
+import { rpcResource } from "./rpc";
 
 type UserState = {
   userId: string;
@@ -44,7 +46,17 @@ function errorCode(error: unknown): string | undefined {
 /** One platform-owned agent per user's artifact, woken by Durable Object alarms. */
 export class UserMemory extends Agent<MemoryEnv, UserState> {
   initialState: UserState = null;
-  private provisioning?: Promise<{ repo: string; remote: string }>;
+  private provisioning?: Promise<{
+    repo: string;
+    remote: string;
+    schedule: {
+      id: string;
+      callback: string;
+      cron: string | null;
+      time: number;
+    };
+    alarmAt: number | null;
+  }>;
   private ai = createAI({ binding: this.env.AI });
   private harness = new PiHarness({
     harness: async ({ storage, context }) => {
@@ -64,6 +76,22 @@ export class UserMemory extends Agent<MemoryEnv, UserState> {
     },
     defaults: { model: this.ai(this.env.MODEL), thinkingLevel: "low" },
   });
+
+  readonly taskDefinitions = {
+    "dream@v1": async ({ runId }: { runId: string }, step: TaskStep) => {
+      // Tasks release the alarm dispatcher while Pi is running and journal the
+      // completion. Pi's operation ID makes a replay safe after an eviction.
+      await step.do(
+        "consolidate",
+        { retries: { limit: 1 }, timeout: "10 minutes" },
+        () =>
+          this.retry(() => this.runDream({ runId }), {
+            maxAttempts: 3,
+            baseDelayMs: 1000,
+          }),
+      );
+    },
+  } satisfies TaskHandlers;
 
   constructor(ctx: DurableObjectState, env: MemoryEnv) {
     super(ctx, env);
@@ -105,13 +133,15 @@ export class UserMemory extends Agent<MemoryEnv, UserState> {
     const state = this.state!;
     if (!state.ready) {
       try {
-        const created = await this.env.ARTIFACTS.create(state.repo, {
-          setDefaultBranch: "main",
-          description: "Per-user agent memory",
-        });
+        using created = rpcResource(
+          await this.env.ARTIFACTS.create(state.repo, {
+            setDefaultBranch: "main",
+            description: "Per-user agent memory",
+          }),
+        );
         // Use short-lived tokens for actual Git work; don't retain the initial token.
         using repo = await this.env.ARTIFACTS.get(state.repo);
-        await repo.revokeToken(created.token);
+        await repo.revokeToken(created.value.token);
       } catch (error) {
         // A crash after creation can safely resume seeding the same deterministic repo.
         if (errorCode(error) !== "ALREADY_EXISTS") throw error;
@@ -124,37 +154,72 @@ export class UserMemory extends Agent<MemoryEnv, UserState> {
     }
     // The Agents scheduler persists this per-user task and uses DO alarms to
     // wake it. DREAM_CRON is a time expression, not a Workers Cron Trigger.
-    // Keep the SDK in charge of the alarm shared with Pi recovery and queues.
+    // Keep the SDK in charge of the alarm shared with Pi recovery and tasks.
     // Registration deduplicates by expression, callback, and payload.
-    await this.schedule(this.env.DREAM_CRON, "dream", undefined, {
-      retry: { maxAttempts: 3 },
-    });
+    const schedule = await this.schedule(
+      this.env.DREAM_CRON,
+      "dream",
+      undefined,
+      {
+        retry: { maxAttempts: 3 },
+      },
+    );
     using repo = await this.env.ARTIFACTS.get(state.repo);
-    return { repo: state.repo, remote: (await repo.info()).remote };
+    using info = rpcResource(await repo.info());
+    return {
+      repo: state.repo,
+      remote: info.value.remote,
+      schedule: {
+        id: schedule.id,
+        callback: schedule.callback,
+        cron: schedule.type === "cron" ? schedule.cron : null,
+        time: schedule.time,
+      },
+      alarmAt: await this.ctx.storage.getAlarm(),
+    };
   }
 
   /** Alarm-backed callback. Manual demos can use a distinct run ID on the same day. */
-  async dream() {
-    return this.requestDream(new Date().toISOString().slice(0, 10));
+  async dream(payload?: { runId: string }) {
+    return this.requestDream(
+      payload?.runId ?? new Date().toISOString().slice(0, 10),
+    );
   }
 
-  async requestDream(runId: string) {
+  async requestDream(runId: string, delaySeconds = 0) {
     identifier(runId);
     if (!this.state?.ready) throw new Error("Provision this user first");
     const run = this
       .sql<DreamRun>`SELECT * FROM dream_runs WHERE id = ${runId}`[0];
     if (run?.status === "done") return run;
+    if (
+      !Number.isInteger(delaySeconds) ||
+      delaySeconds < 0 ||
+      delaySeconds > 86400
+    )
+      throw new Error(
+        "Dream delay must be an integer between 0 and 86400 seconds",
+      );
+    if (delaySeconds > 0) {
+      const scheduled = await this.schedule(
+        delaySeconds,
+        "dream",
+        { runId },
+        { idempotent: true },
+      );
+      return { id: runId, status: "scheduled", scheduleId: scheduled.id };
+    }
     if (!run) {
       const session = await this.harness.sessions.create();
       this
         .sql`INSERT OR IGNORE INTO dream_runs (id, session, status) VALUES (${runId}, ${session.id}, 'queued')`;
     }
-    await this.queue(
-      "runDream",
+    const task = await this.tasks.run(
+      "dream@v1",
       { runId },
-      { retry: { maxAttempts: 3, baseDelayMs: 1000 } },
+      { runId: `dream-${runId}` },
     );
-    return { id: runId, status: "queued" };
+    return { id: runId, status: task.state === "failed" ? "failed" : "queued" };
   }
 
   async dreamStatus(runId: string) {
