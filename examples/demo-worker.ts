@@ -67,17 +67,17 @@ async function runDemo(
   // A deterministic name lets a signup retry continue after creation or seeding.
   let initialToken: string | undefined;
   try {
-    using created = (await env.ARTIFACTS.create(name, {
+    const created = await env.ARTIFACTS.create(name, {
       setDefaultBranch: "main",
       description: "Per-user agent memory",
-    })) as ArtifactsCreateRepoResult & Disposable;
+    });
     initialToken = created.token;
   } catch (error) {
     // A signup may be retrying after creation. Continue only if the binding
     // confirms that this exact repository already exists.
     try {
       using existing = await env.ARTIFACTS.get(name);
-      using info = (await existing.info()) as ArtifactsRepoInfo & Disposable;
+      await existing.info();
     } catch {
       throw error;
     }
@@ -85,10 +85,10 @@ async function runDemo(
   using repo = await env.ARTIFACTS.get(name);
   if (initialToken) await repo.revokeToken(initialToken);
   {
-    using commits = (await repo.log({
+    const commits = await repo.log({
       ref: "main",
       limit: 1,
-    })) as ArtifactsCommitMetadata[] & Disposable;
+    });
     if (!commits.length) {
       await commitFiles(
         repo,
@@ -109,8 +109,8 @@ async function runDemo(
 
   // Persist name in your user record. Give it to the per-user dreaming agent.
   const owner = env.UserMemory.getByName(userId);
-  using initialized = await owner.initialize(userId, name);
-  using info = (await repo.info()) as ArtifactsRepoInfo & Disposable;
+  const initialized = await owner.initialize(userId, name);
+  const info = await repo.info();
   emit({
     event: "artifact",
     userId,
@@ -129,16 +129,16 @@ async function runDemo(
   // Check a repeated signup cannot replace the repository or duplicate its alarm.
   let exists = false;
   try {
-    using duplicate = (await env.ARTIFACTS.create(name, {
+    const duplicate = await env.ARTIFACTS.create(name, {
       setDefaultBranch: "main",
-    })) as ArtifactsCreateRepoResult & Disposable;
+    });
     await repo.revokeToken(duplicate.token);
   } catch {
     using existing = await env.ARTIFACTS.get(name);
-    using info = (await existing.info()) as ArtifactsRepoInfo & Disposable;
+    const info = await existing.info();
     exists = info.name === name;
   }
-  using retried = await owner.initialize(userId, name);
+  const retried = await owner.initialize(userId, name);
   if (!exists || retried.schedule.id !== initialized.schedule.id)
     throw new Error("Signup retry created another artifact or schedule");
   emit({ event: "check", name: "provisioning_retry", passed: true });
@@ -154,9 +154,9 @@ async function runDemo(
       JSON.stringify([userId, sessionId]),
     );
     await agent.initialize(userId, sessionId, name);
-    using accepted = await agent.startTurn("t1", prompt);
+    await agent.startTurn("t1", prompt);
     if (queuedPrompt) {
-      using acceptedNext = await agent.startTurn("t2", queuedPrompt);
+      await agent.startTurn("t2", queuedPrompt);
     }
     emit({ event: "session_started", sessionId });
     const result = await poll(() => agent.turnStatus("t1"), cancelled);
@@ -164,10 +164,10 @@ async function runDemo(
     if (queuedPrompt) {
       const next = await poll(() => agent.turnStatus("t2"), cancelled);
       requireFacts(next.text ?? "", [/Priya/i, /October/i], "queued follow-up");
-      using commits = (await repo.log({
+      const commits = await repo.log({
         ref: "main",
         limit: 20,
-      })) as ArtifactsCommitMetadata[] & Disposable;
+      });
       const history = commits;
       const firstAnswer = history.findIndex(
         (commit) =>
@@ -225,7 +225,7 @@ async function runDemo(
   });
   // Exercise the real alarm path now, using the same callback as overnight.
   const dreamId = "demo-night";
-  using scheduled = await owner.requestDream(dreamId, 1);
+  const scheduled = await owner.requestDream(dreamId, 1);
   emit({ event: "dream_scheduled", ...scheduled });
   const dream = await poll(() => owner.dreamStatus(dreamId), cancelled);
   emit({ event: "dream", text: dream.text });
@@ -274,10 +274,10 @@ async function runDemo(
     "recall after dreaming",
   );
   emit({ event: "check", name: "alarm_dreaming_and_recall", passed: true });
-  using history = (await repo.log({
+  const history = await repo.log({
     ref: "main",
     limit: 20,
-  })) as ArtifactsCommitMetadata[] & Disposable;
+  });
   emit({
     event: "memory",
     ...(await readFile(repo, "MEMORY.md", tree.head ?? undefined)),
@@ -298,16 +298,14 @@ function requireFacts(text: string, patterns: RegExp[], stage: string) {
 // Failed attempts may be retried by the durable task. Give those retries time
 // to settle rather than treating the first failed attempt as terminal.
 async function poll(
-  read: () => Promise<
-    ({ status: string; text: string | null } & Disposable) | null
-  >,
+  read: () => Promise<{ status: string; text: string | null } | null>,
   cancelled: () => boolean,
 ): Promise<{ status: string; text: string | null }> {
   const deadline = Date.now() + 10 * 60_000;
   let failedSince: number | undefined;
   while (Date.now() < deadline) {
     if (cancelled()) throw new Error("Demo disconnected");
-    using result = await read();
+    const result = await read();
     if (result?.status === "done")
       return { status: result.status, text: result.text };
     if (result?.status === "failed") {

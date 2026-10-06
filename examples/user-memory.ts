@@ -43,10 +43,10 @@ export class UserMemory extends Agent<Env, UserState> {
             key: "memory-entry",
             render: async () => {
               using repo = await this.env.ARTIFACTS.get(this.state!.repo);
-              using file = (await repo.readFile({
+              const file = await repo.readFile({
                 ref: "main",
                 path: "MEMORY.md",
-              })) as (Blob & Disposable) | null;
+              });
               if (file && file.size > MAX_FILE_BYTES)
                 throw new Error("Memory index exceeds 64 KiB");
               return file ? await file.text() : "";

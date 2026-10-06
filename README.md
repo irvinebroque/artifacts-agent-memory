@@ -31,9 +31,9 @@ import { commitFiles } from "./src/git";
 
 const userId = authenticatedUser.id;
 const name = await repoName(userId);
-using created = (await env.ARTIFACTS.create(name, {
+const created = await env.ARTIFACTS.create(name, {
   setDefaultBranch: "main",
-})) as ArtifactsCreateRepoResult & Disposable;
+});
 using repo = await env.ARTIFACTS.get(name);
 await repo.revokeToken(created.token);
 await commitFiles(
@@ -50,10 +50,7 @@ await commitFiles(
   ],
   "Seed user memory",
 );
-using schedule = await env.UserMemory.getByName(userId).initialize(
-  userId,
-  name,
-);
+await env.UserMemory.getByName(userId).initialize(userId, name);
 // Retain name in your user record and attach it to later agent sessions.
 ```
 
@@ -85,10 +82,10 @@ registry.install({
       key: "memory-entry",
       render: async () => {
         using repo = await env.ARTIFACTS.get(repoName);
-        using file = (await repo.readFile({
+        const file = await repo.readFile({
           ref: "main",
           path: "MEMORY.md",
-        })) as (Blob & Disposable) | null;
+        });
         if (file && file.size > MAX_FILE_BYTES)
           throw new Error("Memory index exceeds 64 KiB");
         return file ? await file.text() : "";

@@ -30,11 +30,8 @@ export async function commitFiles(
   message: string,
   policy: RepositoryPolicy = {},
 ) {
-  using info = (await repo.info()) as ArtifactsRepoInfo & Disposable;
-  using token = (await repo.createToken(
-    "write",
-    300,
-  )) as ArtifactsCreateTokenResult & Disposable;
+  const info = await repo.info();
+  const token = await repo.createToken("write", 300);
   try {
     const copy = await GitCheckout.open(
       info.remote,
@@ -43,10 +40,10 @@ export async function commitFiles(
     );
     return { head: await copy.commit(expectedHead, edits, message, policy) };
   } catch (error) {
-    using commits = (await repo.log({
+    const commits = await repo.log({
       ref: "main",
       limit: 1,
-    })) as ArtifactsCommitMetadata[] & Disposable;
+    });
     const latest = commits[0]?.hash ?? null;
     if (latest !== expectedHead) throw new ArtifactConflict(latest);
     throw error;

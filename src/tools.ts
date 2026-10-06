@@ -51,10 +51,10 @@ export function artifactTools(
         case "search":
           return result(await searchFiles(repo, args.query ?? "", args.prefix));
         case "history": {
-          using commits = (await repo.log({
+          const commits = await repo.log({
             ref: "main",
             limit: 20,
-          })) as ArtifactsCommitMetadata[] & Disposable;
+          });
           return result(commits);
         }
       }
