@@ -1,11 +1,14 @@
-import { ArtifactRepository } from "../src/artifact";
-import { archiveSource } from "../src/memory";
+import { readFile, listFiles } from "../src/files";
+import { archiveSource } from "../src/archive";
+import { commitFiles } from "../src/git";
+import { repoName } from "../src/format";
+import { rpcResource } from "../src/rpc";
 import { SessionAgent } from "./session-agent";
-export { UserMemory } from "../src/user-memory";
+export { UserMemory } from "./user-memory";
 export { SessionAgent };
 
-// This HTTP adapter exists only to run the example. Platforms call the owner
-// through DO RPC and install artifactTools in their own session harness.
+// This protected HTTP runner demonstrates the platform lifecycle below.
+// Platforms use the binding and the two agents directly in their own backend.
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     if (new URL(request.url).pathname !== "/demo")
@@ -59,23 +62,85 @@ async function runDemo(
   cancelled: () => boolean,
 ) {
   const userId = `demo-${crypto.randomUUID()}`;
+  const name = await repoName(userId);
+
+  // Platform signup: create the artifact directly through the Workers binding.
+  // A deterministic name lets a signup retry continue after creation or seeding.
+  let initialToken: string | undefined;
+  try {
+    using created = rpcResource(
+      await env.ARTIFACTS.create(name, {
+        setDefaultBranch: "main",
+        description: "Per-user agent memory",
+      }),
+    );
+    initialToken = created.value.token;
+  } catch (error) {
+    // A signup may be retrying after creation. Continue only if the binding
+    // confirms that this exact repository already exists.
+    try {
+      using existing = await env.ARTIFACTS.get(name);
+      using info = rpcResource(await existing.info());
+    } catch {
+      throw error;
+    }
+  }
+  using repo = await env.ARTIFACTS.get(name);
+  if (initialToken) await repo.revokeToken(initialToken);
+  {
+    using commits = rpcResource(await repo.log({ ref: "main", limit: 1 }));
+    if (!commits.value.length) {
+      await commitFiles(
+        repo,
+        null,
+        [
+          {
+            path: "MEMORY.md",
+            content:
+              "# Memory: Alice\n\n## Index\n- [[preferences]]\n- [[projects/README]]\n",
+          },
+          { path: "preferences.md", content: "# Preferences\n\n" },
+          { path: "projects/README.md", content: "# Projects\n\n" },
+        ],
+        "Seed user memory",
+      );
+    }
+  }
+
+  // Persist name in your user record. Give it to the per-user dreaming agent.
   const owner = env.UserMemory.getByName(userId);
-  using artifact = await owner.provision(userId, "Alice");
-  const repo = new ArtifactRepository(env.ARTIFACTS, artifact.repo);
-  emit({ event: "artifact", userId, ...artifact });
+  using initialized = await owner.initialize(userId, name);
+  using info = rpcResource(await repo.info());
+  emit({
+    event: "artifact",
+    userId,
+    repo: name,
+    remote: info.value.remote,
+    ...initialized,
+  });
   if (
-    artifact.schedule.callback !== "dream" ||
-    artifact.schedule.cron !== env.DREAM_CRON ||
-    artifact.alarmAt === null
+    initialized.schedule.callback !== "dream" ||
+    initialized.schedule.cron !== env.DREAM_CRON ||
+    initialized.alarmAt === null
   )
     throw new Error("Nightly dreaming schedule was not registered");
   emit({ event: "check", name: "nightly_schedule", passed: true });
-  using retried = await owner.provision(userId, "Alice");
-  if (
-    retried.repo !== artifact.repo ||
-    retried.schedule.id !== artifact.schedule.id
-  )
-    throw new Error("Provisioning retry created another artifact or schedule");
+
+  // Check a repeated signup cannot replace the repository or duplicate its alarm.
+  let exists = false;
+  try {
+    using duplicate = rpcResource(
+      await env.ARTIFACTS.create(name, { setDefaultBranch: "main" }),
+    );
+    await repo.revokeToken(duplicate.value.token);
+  } catch {
+    using existing = await env.ARTIFACTS.get(name);
+    using info = rpcResource(await existing.info());
+    exists = info.value.name === name;
+  }
+  using retried = await owner.initialize(userId, name);
+  if (!exists || retried.schedule.id !== initialized.schedule.id)
+    throw new Error("Signup retry created another artifact or schedule");
   emit({ event: "check", name: "provisioning_retry", passed: true });
 
   // Each conversation is fresh. Only the artifact connects their memories.
@@ -88,7 +153,7 @@ async function runDemo(
     const agent = env.SessionAgent.getByName(
       JSON.stringify([userId, sessionId]),
     );
-    await agent.initialize(userId, sessionId, artifact.repo);
+    await agent.initialize(userId, sessionId, name);
     using accepted = await agent.startTurn("t1", prompt);
     if (queuedPrompt) {
       using acceptedNext = await agent.startTurn("t2", queuedPrompt);
@@ -99,7 +164,8 @@ async function runDemo(
     if (queuedPrompt) {
       const next = await poll(() => agent.turnStatus("t2"), cancelled);
       requireFacts(next.text ?? "", [/Priya/i, /October/i], "queued follow-up");
-      const history = await repo.history();
+      using commits = rpcResource(await repo.log({ ref: "main", limit: 20 }));
+      const history = commits.value;
       const firstAnswer = history.findIndex(
         (commit) =>
           commit.message === `Archive sessions/${sessionId}/t1.answer.json`,
@@ -160,7 +226,7 @@ async function runDemo(
   emit({ event: "dream_scheduled", ...scheduled });
   const dream = await poll(() => owner.dreamStatus(dreamId), cancelled);
   emit({ event: "dream", text: dream.text });
-  const tree = await repo.list();
+  const tree = await listFiles(repo);
   const curated = await Promise.all(
     tree.paths
       .filter(
@@ -169,7 +235,7 @@ async function runDemo(
           !path.startsWith("sessions/") &&
           !path.startsWith(".platform/"),
       )
-      .map((path) => repo.read(path, tree.head ?? undefined)),
+      .map((path) => readFile(repo, path, tree.head ?? undefined)),
   );
   const facts = curated.map((file) => file.content ?? "").join("\n");
   requireFacts(
@@ -184,7 +250,8 @@ async function runDemo(
     ],
     "persisted curated memory and provenance",
   );
-  const report = await repo.read(
+  const report = await readFile(
+    repo,
     `.platform/dreams/${dreamId}.json`,
     tree.head ?? undefined,
   );
@@ -204,12 +271,13 @@ async function runDemo(
     "recall after dreaming",
   );
   emit({ event: "check", name: "alarm_dreaming_and_recall", passed: true });
+  using history = rpcResource(await repo.log({ ref: "main", limit: 20 }));
   emit({
     event: "memory",
-    ...(await repo.read("MEMORY.md", tree.head ?? undefined)),
+    ...(await readFile(repo, "MEMORY.md", tree.head ?? undefined)),
     tree,
     curated,
-    history: await repo.history(),
+    history: history.value,
   });
   emit({ event: "done" });
 }

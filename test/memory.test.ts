@@ -1,8 +1,12 @@
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { GitCheckout, ArtifactConflict } from "../src/git";
-import { repositoryPath, repoName, seedMemory } from "../src/format";
-import { memoryPolicy } from "../src/memory";
+import { repositoryPath, repoName } from "../src/format";
 import { gitServer } from "./git-server";
+
+const memoryPolicy = {
+  readOnlyPrefixes: ["sessions/", ".platform/"],
+  requiredFiles: ["MEMORY.md"],
+};
 
 describe("Artifacts Git memory flow", () => {
   let server: Awaited<ReturnType<typeof gitServer>>;
@@ -12,10 +16,15 @@ describe("Artifacts Git memory flow", () => {
     const copy = await GitCheckout.open(server.remote, server.token, true);
     head = await copy.commit(
       null,
-      Object.entries(seedMemory("Alice")).map(([path, content]) => ({
-        path,
-        content,
-      })),
+      [
+        {
+          path: "MEMORY.md",
+          content:
+            "# Memory: Alice\n\n## Index\n- [[preferences]]\n- [[projects/README]]\n",
+        },
+        { path: "preferences.md", content: "# Preferences\n\n" },
+        { path: "projects/README.md", content: "# Projects\n\n" },
+      ],
       "Seed",
     );
   });
@@ -224,7 +233,4 @@ test("user artifact identities are deterministic and isolated", async () => {
   expect(await repoName("alice")).toBe(await repoName("alice"));
   expect(await repoName("alice")).not.toBe(await repoName("bob"));
   expect(() => repositoryPath("../secret")).toThrow();
-  expect(seedMemory("Alice\n## forged")["MEMORY.md"]).not.toContain(
-    "\n## forged",
-  );
 });

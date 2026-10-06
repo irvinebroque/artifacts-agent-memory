@@ -30,18 +30,6 @@ export async function repoName(userId: string): Promise<string> {
   return `memory-${Array.from(new Uint8Array(digest), (n) => n.toString(16).padStart(2, "0")).join("")}`;
 }
 
-export function seedMemory(displayName: string): Record<string, string> {
-  const name = displayName
-    .replace(/[\r\n\[\]<>#]/g, " ")
-    .trim()
-    .slice(0, 80);
-  return {
-    "MEMORY.md": `# Memory: ${name || "User"}\n\n## Index\n- [[preferences]]\n- [[projects/README]]\n`,
-    "preferences.md": "# Preferences\n\n",
-    "projects/README.md": "# Projects\n\n",
-  };
-}
-
 export function sourcePath(sessionId: string, turnId: string): string {
   return `sessions/${identifier(sessionId)}/${identifier(turnId)}.json`;
 }

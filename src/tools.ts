@@ -1,7 +1,8 @@
 import { Type } from "@earendil-works/pi-ai";
 import type { Extension, ToolRegistration } from "@earendil-works/pi-durable";
-import type { ArtifactRepository } from "./artifact";
-import { ArtifactConflict } from "./git";
+import { readFile, listFiles, searchFiles } from "./files";
+import { ArtifactConflict, commitFiles } from "./git";
+import { rpcResource } from "./rpc";
 
 const Read = Type.Object({
   action: Type.Union([
@@ -30,8 +31,10 @@ const result = (value: unknown) => ({
   content: [{ type: "text" as const, text: JSON.stringify(value) }],
 });
 
-/** A repository capability: the platform chooses the artifact and write policy. */
-export function artifactTools(artifact: () => ArtifactRepository): Extension {
+/** Pi tool definitions for the repository chosen by the platform. */
+export function artifactTools(
+  getRepo: () => Promise<ArtifactsRepo>,
+): Extension {
   const read: ToolRegistration<typeof Read> = {
     name: "artifact",
     description:
@@ -39,17 +42,21 @@ export function artifactTools(artifact: () => ArtifactRepository): Extension {
     parameters: Read,
     replay: "safe",
     async execute(args) {
-      const repo = artifact();
+      using repo = await getRepo();
       switch (args.action) {
         case "read":
           if (!args.path) throw new Error("Read requires a repository path");
-          return result(await repo.read(args.path, args.ref));
+          return result(await readFile(repo, args.path, args.ref));
         case "list":
-          return result(await repo.list(args.prefix));
+          return result(await listFiles(repo, args.prefix));
         case "search":
-          return result(await repo.search(args.query ?? "", args.prefix));
-        case "history":
-          return result(await repo.history());
+          return result(await searchFiles(repo, args.query ?? "", args.prefix));
+        case "history": {
+          using commits = rpcResource(
+            await repo.log({ ref: "main", limit: 20 }),
+          );
+          return result(commits.value);
+        }
       }
     },
   };
@@ -61,8 +68,15 @@ export function artifactTools(artifact: () => ArtifactRepository): Extension {
     replay: "unsafe",
     executionMode: "sequential",
     async execute({ expectedHead, edits, message }) {
+      using repo = await getRepo();
       try {
-        return result(await artifact().commit(expectedHead, edits, message));
+        return result(
+          await commitFiles(repo, expectedHead, edits, message, {
+            // Evidence is platform-written. The agent edits the curated notes.
+            readOnlyPrefixes: ["sessions/", ".platform/"],
+            requiredFiles: ["MEMORY.md"],
+          }),
+        );
       } catch (error) {
         if (error instanceof ArtifactConflict)
           return result({

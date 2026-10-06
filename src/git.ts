@@ -7,6 +7,7 @@ import {
   MAX_TREE_BYTES,
   repositoryPath,
 } from "./format";
+import { rpcResource } from "./rpc";
 
 export type Edit = { path: string; content: string | null };
 export type RepositoryPolicy = {
@@ -19,6 +20,33 @@ export class ArtifactConflict extends Error {
     super(
       "Artifact changed. Reread the latest files and reconcile before committing.",
     );
+  }
+}
+
+/** The binding reads Git objects; writes use a normal Git clone/commit/push. */
+export async function commitFiles(
+  repo: ArtifactsRepo,
+  expectedHead: string | null,
+  edits: Edit[],
+  message: string,
+  policy: RepositoryPolicy = {},
+) {
+  using info = rpcResource(await repo.info());
+  using token = rpcResource(await repo.createToken("write", 300));
+  try {
+    const copy = await GitCheckout.open(
+      info.value.remote,
+      token.value.plaintext,
+      expectedHead === null,
+    );
+    return { head: await copy.commit(expectedHead, edits, message, policy) };
+  } catch (error) {
+    using commits = rpcResource(await repo.log({ ref: "main", limit: 1 }));
+    const latest = commits.value[0]?.hash ?? null;
+    if (latest !== expectedHead) throw new ArtifactConflict(latest);
+    throw error;
+  } finally {
+    await repo.revokeToken(token.value.id);
   }
 }
 
