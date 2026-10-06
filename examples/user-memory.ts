@@ -8,7 +8,6 @@ import { archiveSource } from "../src/archive";
 import { MAX_FILE_BYTES, identifier } from "../src/format";
 import { artifactTools } from "../src/tools";
 import { memorySkillSource, dreamingSkillSource } from "../src/skills";
-import { rpcResource } from "../src/rpc";
 
 type UserState = {
   userId: string;
@@ -44,12 +43,13 @@ export class UserMemory extends Agent<Env, UserState> {
             key: "memory-entry",
             render: async () => {
               using repo = await this.env.ARTIFACTS.get(this.state!.repo);
-              using file = rpcResource(
-                await repo.readFile({ ref: "main", path: "MEMORY.md" }),
-              );
-              if (file.value && file.value.size > MAX_FILE_BYTES)
+              using file = (await repo.readFile({
+                ref: "main",
+                path: "MEMORY.md",
+              })) as (Blob & Disposable) | null;
+              if (file && file.size > MAX_FILE_BYTES)
                 throw new Error("Memory index exceeds 64 KiB");
-              return file.value ? await file.value.text() : "";
+              return file ? await file.text() : "";
             },
           },
         ],

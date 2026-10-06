@@ -7,7 +7,6 @@ import {
   MAX_TREE_BYTES,
   repositoryPath,
 } from "./format";
-import { rpcResource } from "./rpc";
 
 export type Edit = { path: string; content: string | null };
 export type RepositoryPolicy = {
@@ -31,22 +30,28 @@ export async function commitFiles(
   message: string,
   policy: RepositoryPolicy = {},
 ) {
-  using info = rpcResource(await repo.info());
-  using token = rpcResource(await repo.createToken("write", 300));
+  using info = (await repo.info()) as ArtifactsRepoInfo & Disposable;
+  using token = (await repo.createToken(
+    "write",
+    300,
+  )) as ArtifactsCreateTokenResult & Disposable;
   try {
     const copy = await GitCheckout.open(
-      info.value.remote,
-      token.value.plaintext,
+      info.remote,
+      token.plaintext,
       expectedHead === null,
     );
     return { head: await copy.commit(expectedHead, edits, message, policy) };
   } catch (error) {
-    using commits = rpcResource(await repo.log({ ref: "main", limit: 1 }));
-    const latest = commits.value[0]?.hash ?? null;
+    using commits = (await repo.log({
+      ref: "main",
+      limit: 1,
+    })) as ArtifactsCommitMetadata[] & Disposable;
+    const latest = commits[0]?.hash ?? null;
     if (latest !== expectedHead) throw new ArtifactConflict(latest);
     throw error;
   } finally {
-    await repo.revokeToken(token.value.id);
+    await repo.revokeToken(token.id);
   }
 }
 

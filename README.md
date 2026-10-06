@@ -28,15 +28,14 @@ flowchart LR
 // In your platform Worker, after authenticating a new user:
 import { repoName } from "./src/format";
 import { commitFiles } from "./src/git";
-import { rpcResource } from "./src/rpc";
 
 const userId = authenticatedUser.id;
 const name = await repoName(userId);
-using created = rpcResource(
-  await env.ARTIFACTS.create(name, { setDefaultBranch: "main" }),
-);
+using created = (await env.ARTIFACTS.create(name, {
+  setDefaultBranch: "main",
+})) as ArtifactsCreateRepoResult & Disposable;
 using repo = await env.ARTIFACTS.get(name);
-await repo.revokeToken(created.value.token);
+await repo.revokeToken(created.token);
 await commitFiles(
   repo,
   null,
@@ -68,7 +67,6 @@ import { skills } from "agents/harness/pi";
 import { artifactTools } from "./src/tools";
 import { memorySkillSource } from "./src/skills";
 import { MAX_FILE_BYTES } from "./src/format";
-import { rpcResource } from "./src/rpc";
 
 // Inside PiHarness's harness({ storage, context }) callback.
 // models is your configured Pi model registry.
@@ -87,12 +85,13 @@ registry.install({
       key: "memory-entry",
       render: async () => {
         using repo = await env.ARTIFACTS.get(repoName);
-        using file = rpcResource(
-          await repo.readFile({ ref: "main", path: "MEMORY.md" }),
-        );
-        if (file.value && file.value.size > MAX_FILE_BYTES)
+        using file = (await repo.readFile({
+          ref: "main",
+          path: "MEMORY.md",
+        })) as (Blob & Disposable) | null;
+        if (file && file.size > MAX_FILE_BYTES)
           throw new Error("Memory index exceeds 64 KiB");
-        return file.value ? await file.value.text() : "";
+        return file ? await file.text() : "";
       },
     },
   ],

@@ -2,7 +2,6 @@ import { readFile, listFiles } from "../src/files";
 import { archiveSource } from "../src/archive";
 import { commitFiles } from "../src/git";
 import { repoName } from "../src/format";
-import { rpcResource } from "../src/rpc";
 import { SessionAgent } from "./session-agent";
 export { UserMemory } from "./user-memory";
 export { SessionAgent };
@@ -68,19 +67,17 @@ async function runDemo(
   // A deterministic name lets a signup retry continue after creation or seeding.
   let initialToken: string | undefined;
   try {
-    using created = rpcResource(
-      await env.ARTIFACTS.create(name, {
-        setDefaultBranch: "main",
-        description: "Per-user agent memory",
-      }),
-    );
-    initialToken = created.value.token;
+    using created = (await env.ARTIFACTS.create(name, {
+      setDefaultBranch: "main",
+      description: "Per-user agent memory",
+    })) as ArtifactsCreateRepoResult & Disposable;
+    initialToken = created.token;
   } catch (error) {
     // A signup may be retrying after creation. Continue only if the binding
     // confirms that this exact repository already exists.
     try {
       using existing = await env.ARTIFACTS.get(name);
-      using info = rpcResource(await existing.info());
+      using info = (await existing.info()) as ArtifactsRepoInfo & Disposable;
     } catch {
       throw error;
     }
@@ -88,8 +85,11 @@ async function runDemo(
   using repo = await env.ARTIFACTS.get(name);
   if (initialToken) await repo.revokeToken(initialToken);
   {
-    using commits = rpcResource(await repo.log({ ref: "main", limit: 1 }));
-    if (!commits.value.length) {
+    using commits = (await repo.log({
+      ref: "main",
+      limit: 1,
+    })) as ArtifactsCommitMetadata[] & Disposable;
+    if (!commits.length) {
       await commitFiles(
         repo,
         null,
@@ -110,12 +110,12 @@ async function runDemo(
   // Persist name in your user record. Give it to the per-user dreaming agent.
   const owner = env.UserMemory.getByName(userId);
   using initialized = await owner.initialize(userId, name);
-  using info = rpcResource(await repo.info());
+  using info = (await repo.info()) as ArtifactsRepoInfo & Disposable;
   emit({
     event: "artifact",
     userId,
     repo: name,
-    remote: info.value.remote,
+    remote: info.remote,
     ...initialized,
   });
   if (
@@ -129,14 +129,14 @@ async function runDemo(
   // Check a repeated signup cannot replace the repository or duplicate its alarm.
   let exists = false;
   try {
-    using duplicate = rpcResource(
-      await env.ARTIFACTS.create(name, { setDefaultBranch: "main" }),
-    );
-    await repo.revokeToken(duplicate.value.token);
+    using duplicate = (await env.ARTIFACTS.create(name, {
+      setDefaultBranch: "main",
+    })) as ArtifactsCreateRepoResult & Disposable;
+    await repo.revokeToken(duplicate.token);
   } catch {
     using existing = await env.ARTIFACTS.get(name);
-    using info = rpcResource(await existing.info());
-    exists = info.value.name === name;
+    using info = (await existing.info()) as ArtifactsRepoInfo & Disposable;
+    exists = info.name === name;
   }
   using retried = await owner.initialize(userId, name);
   if (!exists || retried.schedule.id !== initialized.schedule.id)
@@ -164,8 +164,11 @@ async function runDemo(
     if (queuedPrompt) {
       const next = await poll(() => agent.turnStatus("t2"), cancelled);
       requireFacts(next.text ?? "", [/Priya/i, /October/i], "queued follow-up");
-      using commits = rpcResource(await repo.log({ ref: "main", limit: 20 }));
-      const history = commits.value;
+      using commits = (await repo.log({
+        ref: "main",
+        limit: 20,
+      })) as ArtifactsCommitMetadata[] & Disposable;
+      const history = commits;
       const firstAnswer = history.findIndex(
         (commit) =>
           commit.message === `Archive sessions/${sessionId}/t1.answer.json`,
@@ -271,13 +274,16 @@ async function runDemo(
     "recall after dreaming",
   );
   emit({ event: "check", name: "alarm_dreaming_and_recall", passed: true });
-  using history = rpcResource(await repo.log({ ref: "main", limit: 20 }));
+  using history = (await repo.log({
+    ref: "main",
+    limit: 20,
+  })) as ArtifactsCommitMetadata[] & Disposable;
   emit({
     event: "memory",
     ...(await readFile(repo, "MEMORY.md", tree.head ?? undefined)),
     tree,
     curated,
-    history: history.value,
+    history,
   });
   emit({ event: "done" });
 }

@@ -6,7 +6,6 @@ import { PiHarness, skills } from "agents/harness/pi";
 import { createAI } from "agents/models/pi-ai";
 import { archiveSource } from "../src/archive";
 import { MAX_FILE_BYTES, identifier, sourcePath } from "../src/format";
-import { rpcResource } from "../src/rpc";
 import { artifactTools } from "../src/tools";
 import { memorySkillSource } from "../src/skills";
 
@@ -49,12 +48,13 @@ export class SessionAgent extends Agent<Env, SessionState> {
             key: "memory-entry",
             render: async () => {
               using repo = await this.env.ARTIFACTS.get(this.state!.repo);
-              using file = rpcResource(
-                await repo.readFile({ ref: "main", path: "MEMORY.md" }),
-              );
-              if (file.value && file.value.size > MAX_FILE_BYTES)
+              using file = (await repo.readFile({
+                ref: "main",
+                path: "MEMORY.md",
+              })) as (Blob & Disposable) | null;
+              if (file && file.size > MAX_FILE_BYTES)
                 throw new Error("Memory index exceeds 64 KiB");
-              return file.value ? await file.value.text() : "";
+              return file ? await file.text() : "";
             },
           },
         ],

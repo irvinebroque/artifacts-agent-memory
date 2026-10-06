@@ -2,7 +2,6 @@ import { Type } from "@earendil-works/pi-ai";
 import type { Extension, ToolRegistration } from "@earendil-works/pi-durable";
 import { readFile, listFiles, searchFiles } from "./files";
 import { ArtifactConflict, commitFiles } from "./git";
-import { rpcResource } from "./rpc";
 
 const Read = Type.Object({
   action: Type.Union([
@@ -52,10 +51,11 @@ export function artifactTools(
         case "search":
           return result(await searchFiles(repo, args.query ?? "", args.prefix));
         case "history": {
-          using commits = rpcResource(
-            await repo.log({ ref: "main", limit: 20 }),
-          );
-          return result(commits.value);
+          using commits = (await repo.log({
+            ref: "main",
+            limit: 20,
+          })) as ArtifactsCommitMetadata[] & Disposable;
+          return result(commits);
         }
       }
     },
