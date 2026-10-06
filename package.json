@@ -1,0 +1,32 @@
+{
+  "name": "artifacts-agent-memory",
+  "version": "1.0.0",
+  "description": "Per-user agent memory and nightly dreaming with Cloudflare Artifacts and Pi Durable",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "types": "wrangler types",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "check": "npm run typecheck && npm test && wrangler deploy --dry-run",
+    "demo": "node scripts/demo.mjs",
+    "format": "prettier --write src examples test skills scripts README.md package.json tsconfig.json wrangler.jsonc"
+  },
+  "type": "module",
+  "dependencies": {
+    "@earendil-works/pi-ai": "1.0.4",
+    "@earendil-works/pi-durable": "1.0.4",
+    "agents": "0.26.0",
+    "isomorphic-git": "^1.43.1",
+    "memfs": "^4.80.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261006.1",
+    "@types/node": "^26.6.4",
+    "prettier": "^3.9.9",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.3",
+    "wrangler": "^4.147.0"
+  },
+  "private": true
+}

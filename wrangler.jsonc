@@ -1,0 +1,25 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "artifacts-agent-memory",
+  "main": "examples/demo-worker.ts",
+  "compatibility_date": "2026-10-06",
+  "compatibility_flags": ["nodejs_compat"],
+  "artifacts": [{ "binding": "ARTIFACTS", "namespace": "agent-memory" }],
+  "ai": { "binding": "AI" },
+  "durable_objects": {
+    "bindings": [
+      { "name": "UserMemory", "class_name": "UserMemory" },
+      { "name": "SessionAgent", "class_name": "SessionAgent" },
+    ],
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["UserMemory", "SessionAgent"] },
+  ],
+  "vars": {
+    "MODEL": "@cf/moonshotai/kimi-k2.7-code",
+    // Per-user Agents schedule, executed using Durable Object alarms.
+    "DREAM_CRON": "0 8 * * *",
+  },
+  "rules": [{ "type": "Text", "globs": ["**/*.md"], "fallthrough": true }],
+  "observability": { "enabled": true, "head_sampling_rate": 1 },
+}
