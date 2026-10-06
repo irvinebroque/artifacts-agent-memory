@@ -24,72 +24,43 @@ flowchart LR
 
 ## Integrate with a platform
 
-The example calls the Artifacts binding directly. On signup, create the user's
-repository and commit its initial files:
-
 ```ts
+// In your platform Worker, after authenticating a new user:
 import { repoName } from "./src/format";
 import { commitFiles } from "./src/git";
 import { rpcResource } from "./src/rpc";
 
 const userId = authenticatedUser.id;
-const name = await repoName(userId); // Stable repository name derived from the user ID.
-
-let initialToken: string | undefined;
-try {
-  using created = rpcResource(
-    await env.ARTIFACTS.create(name, {
-      setDefaultBranch: "main",
-      description: "Per-user agent memory",
-    }),
-  );
-  initialToken = created.value.token;
-} catch (error) {
-  // Continue a signup retry only after confirming that this repository exists.
-  try {
-    using existing = await env.ARTIFACTS.get(name);
-    using info = rpcResource(await existing.info());
-  } catch {
-    throw error;
-  }
-}
-
+const name = await repoName(userId);
+using created = rpcResource(
+  await env.ARTIFACTS.create(name, { setDefaultBranch: "main" }),
+);
 using repo = await env.ARTIFACTS.get(name);
-if (initialToken) await repo.revokeToken(initialToken);
-using commits = rpcResource(await repo.log({ ref: "main", limit: 1 }));
-if (!commits.value.length) {
-  const displayName = authenticatedUser.name
-    .replace(/[\r\n\[\]<>#]/g, " ")
-    .trim()
-    .slice(0, 80);
-  await commitFiles(
-    repo,
-    null,
-    [
-      {
-        path: "MEMORY.md",
-        content: `# Memory: ${displayName || "User"}\n\n## Index\n- [[preferences]]\n- [[projects/README]]\n`,
-      },
-      { path: "preferences.md", content: "# Preferences\n\n" },
-      { path: "projects/README.md", content: "# Projects\n\n" },
-    ],
-    "Seed user memory",
-  );
-}
-
-// Store name in your user record. Attach this repository to its dreaming agent.
-const dreamer = env.UserMemory.getByName(userId);
-using schedule = await dreamer.initialize(userId, name);
+await repo.revokeToken(created.value.token);
+await commitFiles(
+  repo,
+  null,
+  [
+    {
+      path: "MEMORY.md",
+      content:
+        "# Memory\n\n## Index\n- [[preferences]]\n- [[projects/README]]\n",
+    },
+    { path: "preferences.md", content: "# Preferences\n\n" },
+    { path: "projects/README.md", content: "# Projects\n\n" },
+  ],
+  "Seed user memory",
+);
+using schedule = await env.UserMemory.getByName(userId).initialize(
+  userId,
+  name,
+);
+// Retain name in your user record and attach it to later agent sessions.
 ```
 
-`commitFiles` performs a Git clone, commit, and non-force push using a short-lived
-token, then revokes it. `rpcResource` releases RPC metadata and blobs whose
-binding types omit their disposer. Both are local implementation helpers.
-A signup retry reuses the repository and schedule; an existing repository is
-never reseeded. If two signups race to seed it, retry after a Git conflict.
+The complete signup flow is in [examples/demo-worker.ts](examples/demo-worker.ts).
 
-When constructing the user's Pi harness, register the tools, prompt section,
-and skill explicitly:
+Then when instantiating a Pi agent:
 
 ```ts
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
@@ -132,14 +103,7 @@ return Harness.open(storage, { models, registry }, context);
 
 The prompt section reads the latest `MEMORY.md` on each model request. The skill
 teaches the agent when to retrieve deeper notes, which facts to retain, and how
-to format them. The local tool definitions in [src/tools.ts](src/tools.ts) use native
-Artifacts repository handles and protect `sessions/`, `.platform/`, and the
-presence of `MEMORY.md`.
-
-The platform archives the actual user turn before running Pi and its answer
-afterward. [examples/session-agent.ts](examples/session-agent.ts) shows these steps alongside the model
-call; [src/archive.ts](src/archive.ts) keeps source IDs immutable and reconciles concurrent
-Git writes. This gives dreaming evidence beyond what the session chose to save.
+to format them.
 
 The agent works on ordinary repository files:
 
@@ -179,29 +143,4 @@ await this.schedule(this.env.DREAM_CRON, "dream", undefined, {
 });
 ```
 
-The schedule is persisted by the Agents SDK and fires through a Durable Object
-alarm. [examples/user-memory.ts](examples/user-memory.ts) shows the callback, fresh Pi dreaming session,
-second skill, and archived dream report together.
-
-Read the complete flow in [examples/demo-worker.ts](examples/demo-worker.ts): create and seed a user,
-run fresh conversations, record a correction, capture interrupted sessions,
-fire a dreaming alarm, and check the resulting memory. All helpers are source
-files in this repo; the Cloudflare and Pi imports are the underlying APIs.
-
-## Run the example
-
-```sh
-npm ci
-npm run check
-```
-
-For local development, put `DEMO_API_KEY` in the ignored `.dev.vars` file, run
-`npm run dev`, then run the demo in another terminal:
-
-```sh
-MEMORY_URL=http://localhost:8787 DEMO_API_KEY=YOUR-SECRET npm run demo
-```
-
-Artifacts and Workers AI use real remote services in local development. Each
-successful demo retains a new artifact for inspection. The client exits with
-an error unless every live check completes.
+See [examples/user-memory.ts](examples/user-memory.ts) for the dreaming agent.
